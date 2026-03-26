@@ -5,12 +5,14 @@ import numpy as np
 
 app = FastAPI(
     title="Technical Indicators API",
-    description="API for RSI and EMA using yfinance",
-    version="1.0.0"
+    description="Optimized API for RSI and EMA (lightweight)",
+    version="2.0.0"
 )
 
+LOOKBACK_CANDLES = 250  # enough for EMA 200
+
 # =========================
-# Utility Functions (TOOLS)
+# Indicator Functions
 # =========================
 
 def calculate_ema(series: pd.Series, period: int):
@@ -35,55 +37,52 @@ def calculate_rsi(series: pd.Series, period: int = 14):
     return rsi
 
 
-def fetch_data(ticker: str, interval: str, period: str):
-    df = yf.download(ticker, interval=interval, period=period)
+# =========================
+# Optimized Data Fetch
+# =========================
+
+def fetch_minimal_data(ticker: str, interval: str):
+    ticker_obj = yf.Ticker(ticker)
+
+    # Always fetch small safe window
+    df = ticker_obj.history(interval=interval, period="5d")
+
     df.dropna(inplace=True)
-    return df
+
+    # Trim to only required candles
+    return df.tail(LOOKBACK_CANDLES)
 
 
 # =========================
-# API ENDPOINTS
+# SINGLE OPTIMIZED ENDPOINT
 # =========================
 
-@app.get("/ema")
-def get_ema(
-    ticker: str = Query(..., description="Stock ticker (e.g., AAPL, RELIANCE.NS)"),
-    interval: str = Query("1d", description="Data interval (1m, 5m, 1h, 1d)"),
-    period: str = Query("1mo", description="Lookback period (1d, 5d, 1mo, etc.)"),
-    ema_length: int = Query(20, description="EMA length")
+@app.get("/technical_snapshot")
+def get_technical_snapshot(
+    ticker: str = Query(...),
+    interval: str = Query("5m")
 ):
-    df = fetch_data(ticker, interval, period)
+    df = fetch_minimal_data(ticker, interval)
 
-    df["EMA"] = calculate_ema(df["Close"], ema_length)
+    close = df["Close"]
 
-    latest_value = df["EMA"].iloc[-1]
+    # Indicators
+    rsi = calculate_rsi(close, 14).iloc[-1]
+
+    ema_9 = calculate_ema(close, 9).iloc[-1]
+    ema_50 = calculate_ema(close, 50).iloc[-1]
+    ema_100 = calculate_ema(close, 100).iloc[-1]
+    ema_200 = calculate_ema(close, 200).iloc[-1]
+
+    price = close.iloc[-1]
 
     return {
         "ticker": ticker,
-        "indicator": "EMA",
-        "ema_length": ema_length,
         "interval": interval,
-        "value": round(float(latest_value), 4)
-    }
-
-
-@app.get("/rsi")
-def get_rsi(
-    ticker: str = Query(..., description="Stock ticker"),
-    interval: str = Query("1d"),
-    period: str = Query("1mo"),
-    rsi_length: int = Query(14)
-):
-    df = fetch_data(ticker, interval, period)
-
-    df["RSI"] = calculate_rsi(df["Close"], rsi_length)
-
-    latest_value = df["RSI"].iloc[-1]
-
-    return {
-        "ticker": ticker,
-        "indicator": "RSI",
-        "rsi_length": rsi_length,
-        "interval": interval,
-        "value": round(float(latest_value), 2)
+        "price": round(float(price), 2),
+        "rsi_14": round(float(rsi), 2),
+        "ema_9": round(float(ema_9), 2),
+        "ema_50": round(float(ema_50), 2),
+        "ema_100": round(float(ema_100), 2),
+        "ema_200": round(float(ema_200), 2)
     }
