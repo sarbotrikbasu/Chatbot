@@ -8,8 +8,8 @@ app = FastAPI(
     title="Stock Indicators API",
     description="API to calculate the latest RSI and EMA for any stock ticker, designed for ChatGPT Custom Actions.",
     version="1.0.0",
-    # If deploying to Render, uncomment and update the URL below after getting your service URL
-    # servers=[{"url": "https://your-service-name.onrender.com"}]
+   
+    servers=[{"url": "https://chatbot-beryl-one-50.vercel.app/"}]
 )
 
 def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
