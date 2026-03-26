@@ -1,104 +1,101 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
+from pydantic import BaseModel
 import yfinance as yf
 import pandas as pd
+from typing import Optional
 
 app = FastAPI(
-    title="Technical Indicators API",
-    description="Ultra-optimized API for RSI & EMA (minimal data, single call)",
-    version="3.0.0"
+    title="Stock Indicators API",
+    description="API to calculate the latest RSI and EMA for any stock ticker, designed for ChatGPT Custom Actions.",
+    version="1.0.0",
+    # If deploying to Render, uncomment and update the URL below after getting your service URL
+    # servers=[{"url": "https://your-service-name.onrender.com"}]
 )
 
-# =========================
-# CONFIG
-# =========================
-LOOKBACK_CANDLES = 220  # enough for EMA 200 + buffer
-
-# =========================
-# INDICATOR FUNCTIONS
-# =========================
-def calculate_ema(series: pd.Series, period: int):
-    return series.ewm(span=period, adjust=False).mean()
-
-
-def calculate_rsi(series: pd.Series, period: int = 14):
-    delta = series.diff()
-
+def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
+    delta = prices.diff()
     gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
-
+    loss = -1 * delta.clip(upper=0)
+    
+    # Wilder's moving average
+    avg_gain = gain.ewm(com=period - 1, adjust=False).mean()
+    avg_loss = loss.ewm(com=period - 1, adjust=False).mean()
+    
     rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
+class IndicatorResponse(BaseModel):
+    symbol: str
+    indicator: str
+    period: int
+    latest_value: float
 
-# =========================
-# MINIMAL DATA FETCH
-# =========================
-def fetch_minimal_data(ticker: str, interval: str):
-    try:
-        df = yf.download(
-            tickers=ticker,
-            interval=interval,
-            period="2d",   # minimal safe fetch
-            progress=False
-        )
-
-        if df.empty:
-            return None
-
-        # Keep only required column
-        df = df[["Close"]]
-
-        # Trim BEFORE calculations
-        df = df.tail(LOOKBACK_CANDLES)
-
-        # Remove index (prevents serialization overhead)
-        df.reset_index(drop=True, inplace=True)
-
-        return df
-
-    except Exception:
-        return None
-
-
-# =========================
-# SINGLE SNAPSHOT ENDPOINT
-# =========================
-@app.get("/technical_snapshot")
-def get_technical_snapshot(
-    ticker: str = Query(..., description="Stock ticker (e.g., RELIANCE.NS)"),
-    interval: str = Query("5m", description="Timeframe (1m, 5m, 15m, etc.)")
+@app.get("/rsi", response_model=IndicatorResponse, summary="Calculate RSI", description="Calculates the Relative Strength Index for a given stock ticker.")
+def get_rsi(
+    symbol: str = Query(..., description="Stock ticker symbol (e.g., AAPL, MSFT, ^NSEI)"),
+    period: int = Query(14, description="Period for RSI calculation (default: 14)")
 ):
-    df = fetch_minimal_data(ticker, interval)
-
-    if df is None or len(df) < 50:
-        return {"error": "Insufficient data or invalid ticker"}
-
-    close = df["Close"]
-
     try:
-        # ===== Indicators =====
-        rsi = calculate_rsi(close, 14).iloc[-1]
-
-        ema9 = calculate_ema(close, 9).iloc[-1]
-        ema50 = calculate_ema(close, 50).iloc[-1]
-        ema100 = calculate_ema(close, 100).iloc[-1]
-        ema200 = calculate_ema(close, 200).iloc[-1]
-
-        price = close.iloc[-1]
-
-        # ===== Minimal Response =====
+        stock = yf.Ticker(symbol)
+        # Fetch enough historical data to calculate RSI
+        hist = stock.history(period="1y") 
+        if hist.empty:
+            raise HTTPException(status_code=404, detail=f"Ticker '{symbol}' not found or no data available.")
+        
+        prices = hist['Close']
+        if len(prices) < period * 2:
+            raise HTTPException(status_code=400, detail="Not enough data to calculate reliable RSI.")
+            
+        rsi_series = calculate_rsi(prices, period)
+        latest_rsi = rsi_series.iloc[-1]
+        
+        if pd.isna(latest_rsi):
+            raise HTTPException(status_code=500, detail="Failed to calculate RSI value.")
+            
         return {
-            "ticker": ticker,
-            "price": float(round(price, 2)),
-            "rsi": float(round(rsi, 2)),
-            "ema9": float(round(ema9, 2)),
-            "ema50": float(round(ema50, 2)),
-            "ema100": float(round(ema100, 2)),
-            "ema200": float(round(ema200, 2))
+            "symbol": symbol,
+            "indicator": "RSI",
+            "period": period,
+            "latest_value": round(float(latest_rsi), 2)
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    except Exception:
-        return {"error": "Indicator calculation failed"}
+@app.get("/ema", response_model=IndicatorResponse, summary="Calculate EMA", description="Calculates the Exponential Moving Average for a given stock ticker.")
+def get_ema(
+    symbol: str = Query(..., description="Stock ticker symbol (e.g., AAPL)"),
+    period: int = Query(20, description="Period for EMA calculation (default: 20)")
+):
+    try:
+        stock = yf.Ticker(symbol)
+        hist = stock.history(period="1y")
+        if hist.empty:
+            raise HTTPException(status_code=404, detail=f"Ticker '{symbol}' not found or no data available.")
+            
+        prices = hist['Close']
+        if len(prices) < period:
+            raise HTTPException(status_code=400, detail="Not enough data to calculate EMA.")
+            
+        ema_series = prices.ewm(span=period, adjust=False).mean()
+        latest_ema = ema_series.iloc[-1]
+        
+        if pd.isna(latest_ema):
+            raise HTTPException(status_code=500, detail="Failed to calculate EMA value.")
+            
+        return {
+            "symbol": symbol,
+            "indicator": "EMA",
+            "period": period,
+            "latest_value": round(float(latest_ema), 2)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health", summary="Health Check")
+def health_check():
+    return {"status": "ok"}
